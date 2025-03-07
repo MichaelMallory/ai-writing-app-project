@@ -350,10 +350,18 @@ export async function searchEntities(
         const data = doc.data();
         console.log('Document data:', data);
         
-        return {
+        // For plot points (events), use title as name if name is not available
+        const name = type === 'plotPoint' ? (data.name || data.title) : data.name;
+        
+        if (!name) {
+          console.warn(`Entity ${doc.id} has no name or title`);
+          return null;
+        }
+        
+        const entity: Entity = {
           id: doc.id,
           type,
-          name: data.name,
+          name,
           metadata: {
             description: data.description,
             aliases: data.aliases || [],
@@ -368,19 +376,21 @@ export async function searchEntities(
               features: data.attributes?.features || [],
               significance: data.attributes?.significance || [],
             } : {
-              // Event attributes
-              type: data.attributes?.type,
-              events: data.attributes?.events || [],
-              impact: data.attributes?.impact || [],
-              connections: data.attributes?.connections || [],
+              // Event/Plot Point attributes
+              type: data.type,
+              events: data.events || [],
+              impact: data.impact || [],
+              connections: data.connections || []
             }
           },
           projectId: data.projectId,
-          createdAt: data.createdAt?.toDate(),
-          updatedAt: data.updatedAt?.toDate(),
-        } as Entity;
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+        };
+        
+        return entity;
       })
-      // Filter by search term locally (case-insensitive)
+      .filter((entity): entity is Entity => entity !== null)
       .filter(entity => {
         const nameMatch = entity.name.toLowerCase().includes(searchTerm.toLowerCase());
         const aliasMatch = (entity.metadata.aliases || []).some(alias => 
@@ -530,4 +540,18 @@ export async function updateChapterNote(
 export async function deleteChapterNote(noteId: string): Promise<void> {
   const noteRef = doc(db, 'chapterNotes', noteId);
   await deleteDoc(noteRef);
+}
+
+// Update chapter content
+export async function updateChapterContent(chapterId: string, content: string): Promise<void> {
+  try {
+    const chapterRef = doc(db, 'chapters', chapterId);
+    await updateDoc(chapterRef, {
+      content,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Error updating chapter content:', error);
+    throw error;
+  }
 } 

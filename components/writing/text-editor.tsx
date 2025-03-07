@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { ChapterWithRelationships } from '@/lib/db/types';
+import { updateChapterContent } from '@/lib/db/chapters';
 import { 
   Bold, 
   Italic, 
@@ -19,7 +20,8 @@ import {
   Heading3,
   Undo,
   Redo,
-  Search
+  Search,
+  Loader2
 } from 'lucide-react';
 import { AiEnhancedTextarea } from '@/components/ui/ai-enhanced-textarea';
 
@@ -35,49 +37,108 @@ interface TextEditorProps {
   onChapterUpdate?: (chapterId: string, title: string) => void;
 }
 
+// Add debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 export function TextEditor({ activeChapterId, aiScribeEnabled, activeChapter, onChapterUpdate }: TextEditorProps) {
-  const [chapterContents, setChapterContents] = useState<ChapterContent[]>([
-    { 
-      id: 'chapter-1', 
-      content: 'It was a dark and stormy night. The wind howled through the trees, and the rain pounded against the windows. I sat alone in my study, contemplating the events that had led me to this moment.\n\nThe manuscript lay open on my desk, its pages yellowed with age. I had discovered it in the attic of my grandfather\'s house, hidden away in an old trunk. The story it told was incredible, almost unbelievable, and yet I knew it to be true.'
-    },
-    { 
-      id: 'section-1-1', 
-      content: 'The introduction sets the scene for our story. The protagonist discovers an old manuscript that will change their life forever.'
-    },
-    { 
-      id: 'section-1-2', 
-      content: 'In this scene, we meet the protagonist for the first time. They are sitting in their study during a storm, reading an old manuscript they found in their grandfather\'s attic.'
-    },
-    { 
-      id: 'chapter-2', 
-      content: 'The next morning dawned bright and clear, a stark contrast to the tumultuous night before. I packed the manuscript carefully in my bag and set out for the university. Professor Jenkins would know what to make of it.\n\nThe campus was quiet, most students still asleep in their dorms. I made my way to the history department, my footsteps echoing in the empty hallways.'
-    },
-    { 
-      id: 'section-2-1', 
-      content: 'The protagonist decides to seek help from Professor Jenkins, an expert in ancient manuscripts. This introduces the first conflict as the professor reveals something unexpected about the manuscript.'
-    },
-    { 
-      id: 'chapter-3', 
-      content: 'Three days later, I found myself on a plane to Istanbul. The manuscript had revealed coordinates to a location in the old city, and Professor Jenkins had insisted I go immediately.\n\n"Time is of the essence," he had said, his eyes gleaming with excitement. "If what this manuscript says is true, we could be on the verge of the greatest historical discovery of the century."'
-    }
-  ]);
-  
   const [currentContent, setCurrentContent] = useState('');
   const [wordCount, setWordCount] = useState(0);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState('');
+  const [lastSaved, setLastSaved] = useState<Date>(new Date());
+  const [isSaving, setIsSaving] = useState(false);
+  const contentRef = useRef(currentContent);
+  const lastSavedContent = useRef('');
   
+  // Debounce the content changes with a 3-second delay
+  const debouncedContent = useDebounce(currentContent, 3000);
+  
+  // Keep contentRef in sync with currentContent
   useEffect(() => {
-    if (activeChapterId) {
-      const content = chapterContents.find(c => c.id === activeChapterId)?.content || '';
-      setCurrentContent(content);
-      setWordCount(countWords(content));
-    } else {
-      setCurrentContent('');
-      setWordCount(0);
+    contentRef.current = currentContent;
+  }, [currentContent]);
+  
+  // Load chapter content when active chapter changes
+  useEffect(() => {
+    if (activeChapter?.id !== contentRef.current.chapterId) {  // Only update if switching to different chapter
+      if (activeChapter) {
+        const initialContent = activeChapter.content || '';
+        setCurrentContent(initialContent);
+        contentRef.current = initialContent;
+        lastSavedContent.current = initialContent;
+        setWordCount(countWords(initialContent));
+        setLastSaved(activeChapter.updatedAt || new Date());
+      } else {
+        setCurrentContent('');
+        contentRef.current = '';
+        lastSavedContent.current = '';
+        setWordCount(0);
+      }
     }
-  }, [activeChapterId, chapterContents]);
+  }, [activeChapter]);
+  
+  // Save content when debounced content changes
+  useEffect(() => {
+    const saveContent = async () => {
+      // Only save if:
+      // 1. We have an active chapter
+      // 2. The content has actually changed from last saved content
+      // 3. We're not currently saving
+      if (
+        activeChapter?.id && 
+        debouncedContent !== lastSavedContent.current &&
+        !isSaving
+      ) {
+        try {
+          setIsSaving(true);
+          await updateChapterContent(activeChapter.id, debouncedContent);
+          lastSavedContent.current = debouncedContent;
+          setLastSaved(new Date());
+        } catch (error) {
+          console.error('Error saving chapter content:', error);
+        } finally {
+          setIsSaving(false);
+        }
+      }
+    };
+    
+    saveContent();
+  }, [debouncedContent, activeChapter?.id]);
+  
+  // Save content when unmounting or switching chapters
+  useEffect(() => {
+    return () => {
+      const saveOnUnmount = async () => {
+        if (
+          activeChapter?.id && 
+          contentRef.current !== lastSavedContent.current
+        ) {
+          try {
+            await updateChapterContent(activeChapter.id, contentRef.current);
+            lastSavedContent.current = contentRef.current;
+          } catch (error) {
+            console.error('Error saving chapter content on unmount:', error);
+          }
+        }
+      };
+      
+      saveOnUnmount();
+    };
+  }, [activeChapter?.id]);
   
   const countWords = (text: string) => {
     return text.split(/\s+/).filter(word => word.length > 0).length;
@@ -87,14 +148,6 @@ export function TextEditor({ activeChapterId, aiScribeEnabled, activeChapter, on
     const newContent = e.target.value;
     setCurrentContent(newContent);
     setWordCount(countWords(newContent));
-    
-    if (activeChapterId) {
-      setChapterContents(chapterContents.map(c => 
-        c.id === activeChapterId 
-          ? { ...c, content: newContent } 
-          : c
-      ));
-    }
   };
   
   const getChapterTitle = () => {
@@ -209,7 +262,7 @@ export function TextEditor({ activeChapterId, aiScribeEnabled, activeChapter, on
       </div>
       
       <ScrollArea className="flex-1 p-6">
-        {activeChapterId ? (
+        {activeChapterId && activeChapter ? (
           <AiEnhancedTextarea
             value={currentContent}
             onChange={handleContentChange}
@@ -217,7 +270,7 @@ export function TextEditor({ activeChapterId, aiScribeEnabled, activeChapter, on
             placeholder="Start writing here..."
             aiScribeEnabled={aiScribeEnabled}
             chapterId={activeChapterId}
-            projectId={activeChapter?.projectId}
+            projectId={activeChapter.projectId}
             contentType="text"
           />
         ) : (
@@ -231,8 +284,17 @@ export function TextEditor({ activeChapterId, aiScribeEnabled, activeChapter, on
         <div>
           {wordCount} words
         </div>
-        <div>
-          Last saved: {new Date().toLocaleTimeString()}
+        <div className="flex items-center gap-2">
+          {isSaving ? (
+            <span className="flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Saving...
+            </span>
+          ) : (
+            <span>
+              Last saved: {lastSaved.toLocaleTimeString()}
+            </span>
+          )}
         </div>
       </div>
     </div>
